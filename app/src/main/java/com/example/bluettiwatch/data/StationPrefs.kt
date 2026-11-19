@@ -22,6 +22,16 @@ class StationPrefs(context: Context) {
         get() = p.getLong("last_attempt", 0)
         set(v) = p.edit().putLong("last_attempt", v).apply()
 
+    /** Прежний тайм-аут экрана станции, который нужно вернуть (-1 — нечего возвращать). */
+    var displayRestoreValue: Int
+        get() = p.getInt("display_restore", -1)
+        set(v) = p.edit().putInt("display_restore", v).apply()
+
+    /** Когда вернуть прежний тайм-аут экрана. */
+    var displayRestoreAt: Long
+        get() = p.getLong("display_restore_at", 0)
+        set(v) = p.edit().putLong("display_restore_at", v).apply()
+
     fun saveReading(r: StationReading) {
         p.edit()
             .putInt("soc", r.soc)

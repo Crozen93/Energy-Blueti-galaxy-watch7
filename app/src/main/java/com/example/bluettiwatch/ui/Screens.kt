@@ -10,6 +10,7 @@ import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,7 +34,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,7 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import androidx.wear.compose.material.ToggleChip
 import com.example.bluettiwatch.MainActivity
+import com.example.bluettiwatch.data.ActionResult
 import com.example.bluettiwatch.data.ConnState
 import com.example.bluettiwatch.data.Format
 import com.example.bluettiwatch.data.Permissions
@@ -281,7 +285,8 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
     val scope = rememberCoroutineScope()
     val prefs = remember { StationPrefs(context) }
     var bgRefresh by remember { mutableStateOf(prefs.backgroundRefresh) }
-    var actionMessage by remember { mutableStateOf<String?>(null) }
+    var actionMessage by remember { mutableStateOf<ActionResult?>(null) }
+    val haptic = LocalHapticFeedback.current
     var confirmOff by remember { mutableStateOf<Boolean?>(null) } // true = AC, false = DC
     val now by produceState(System.currentTimeMillis()) {
         while (true) {
@@ -306,7 +311,7 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
             return
         }
         confirmOff = null
-        scope.launch { actionMessage = StationRepository.setOutput(ac, wantOn) }
+        scope.launch { actionMessage = StationRepository.setOutput(ac, wantOn)?.let { ActionResult(false, it) } }
     }
 
     Scaffold(
@@ -319,7 +324,20 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
             horizontalAlignment = Alignment.CenterHorizontally,
             autoCentering = AutoCenteringParams(itemIndex = 0),
         ) {
-            item { SocRing(state) }
+            item {
+                SocRing(
+                    state = state,
+                    now = now,
+                    onClick = {
+                        if (!connected) {
+                            actionMessage = ActionResult(false, "Нет соединения со станцией")
+                        } else if (!state.busyDisplay) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            scope.launch { actionMessage = StationRepository.wakeDisplay(context) }
+                        }
+                    },
+                )
+            }
             item { PowerRow(state) }
             item {
                 Text(
@@ -331,7 +349,15 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
                 )
             }
             actionMessage?.let { msg ->
-                item { Text(msg, fontSize = 11.sp, color = Color(0xFFFF8A80), textAlign = TextAlign.Center) }
+                item {
+                    Text(
+                        msg.text,
+                        fontSize = 11.sp,
+                        color = if (msg.ok) Color(0xFF81C784) else Color(0xFFFF8A80),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
             }
             item {
                 OutputChip(
@@ -385,10 +411,16 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
 }
 
 @Composable
-private fun SocRing(state: UiState) {
+private fun SocRing(state: UiState, now: Long, onClick: () -> Unit) {
     val r = state.reading
     val soc = r?.soc
-    Box(modifier = Modifier.size(150.dp), contentAlignment = Alignment.Center) {
+    val displayOn = state.displayOnUntil > now
+    Box(
+        modifier = Modifier
+            .size(150.dp)
+            .clickable(onClickLabel = "Включить экран станции", onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
         CircularProgressIndicator(
             progress = (soc ?: 0) / 100f,
             modifier = Modifier.fillMaxSize(),
@@ -420,6 +452,15 @@ private fun SocRing(state: UiState) {
                         color = Grey,
                     )
                 }
+                Text(
+                    when {
+                        state.busyDisplay -> "…"
+                        displayOn -> "☀ экран вкл."
+                        else -> "☀ экран"
+                    },
+                    fontSize = 11.sp,
+                    color = if (displayOn) Color(0xFFFFD54F) else Grey,
+                )
             }
         }
     }

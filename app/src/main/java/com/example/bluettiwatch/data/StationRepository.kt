@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.bluettiwatch.ble.BluettiBleClient
+import com.example.bluettiwatch.ble.ModbusException
 import com.example.bluettiwatch.protocol.Ac180p
 import com.example.bluettiwatch.widgets.WidgetUpdater
 import kotlinx.coroutines.CancellationException
@@ -27,7 +28,13 @@ data class UiState(
     val estimate: Estimate? = null,
     val deviceName: String? = null,
     val busySwitch: Boolean = false,
+    /** До какого времени экран станции включён нашей командой (0 — нет). */
+    val displayOnUntil: Long = 0,
+    val busyDisplay: Boolean = false,
 )
+
+/** Результат действия для показа на экране. */
+data class ActionResult(val ok: Boolean, val text: String)
 
 object Permissions {
     val REQUIRED = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
@@ -46,6 +53,7 @@ object StationRepository {
     private const val POLL_MS = 4_000L
     private const val RETRY_MS = 5_000L
     private const val WIDGET_PUSH_MS = 60_000L
+    private const val DISPLAY_ON_MS = 60_000L
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -100,6 +108,7 @@ object StationRepository {
                     _state.update { it.copy(conn = ConnState.CONNECTED, message = null) }
                     while (true) {
                         publish(app, client.readStation(), live = true)
+                        maybeRestoreDisplay(client, prefs)
                         delay(POLL_MS)
                     }
                 } catch (e: CancellationException) {
@@ -131,6 +140,7 @@ object StationRepository {
                 client.readStation()
             } ?: return false
             publish(app, reading, live = false)
+            withTimeoutOrNull(10_000) { maybeRestoreDisplay(client, prefs) }
             return true
         } catch (e: CancellationException) {
             throw e
@@ -160,6 +170,62 @@ object StationRepository {
             "Не удалось: ${e.message}"
         } finally {
             _state.update { it.copy(busySwitch = false) }
+        }
+    }
+
+    /**
+     * Включить экран станции (экспериментально): ставим тайм-аут экрана «никогда»,
+     * через минуту возвращаем прежнее значение. Отдельной команды «разбудить экран»
+     * у AC180P не найдено — расчёт на то, что смена настройки зажигает экран.
+     */
+    suspend fun wakeDisplay(context: Context): ActionResult {
+        val client = liveClient ?: return ActionResult(false, "Нет соединения со станцией")
+        val prefs = StationPrefs(context)
+        _state.update { it.copy(busyDisplay = true) }
+        return try {
+            val pending = prefs.displayRestoreValue
+            val previous = if (pending in 2..5) pending else client.readUInt16(Ac180p.REG_DISPLAY_TIMEOUT)
+            if (previous !in 2..5) {
+                return ActionResult(false, "Неизвестный режим экрана ($previous) — не трогаю")
+            }
+            if (previous == Ac180p.DISPLAY_NEVER) {
+                // Экран и так настроен не гаснуть: дёргаем настройку, чтобы станция отреагировала
+                client.writeRegister(Ac180p.REG_DISPLAY_TIMEOUT, Ac180p.DISPLAY_5MIN)
+                client.writeRegister(Ac180p.REG_DISPLAY_TIMEOUT, Ac180p.DISPLAY_NEVER)
+                ActionResult(true, "Экран станции и так настроен не гаснуть")
+            } else {
+                val until = System.currentTimeMillis() + DISPLAY_ON_MS
+                prefs.displayRestoreValue = previous
+                prefs.displayRestoreAt = until
+                client.writeRegister(Ac180p.REG_DISPLAY_TIMEOUT, Ac180p.DISPLAY_NEVER)
+                _state.update { it.copy(displayOnUntil = until) }
+                ActionResult(true, "Экран станции включён на 1 мин")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ModbusException) {
+            ActionResult(false, "Станция не поддерживает команду экрана (код ${e.code})")
+        } catch (e: Exception) {
+            Log.w(TAG, "wake display failed", e)
+            ActionResult(false, "Команда не прошла (${e.message}). Похоже, AC180P её не поддерживает")
+        } finally {
+            _state.update { it.copy(busyDisplay = false) }
+        }
+    }
+
+    /** Вернуть прежний тайм-аут экрана, когда минута прошла (или при следующем подключении). */
+    private suspend fun maybeRestoreDisplay(client: BluettiBleClient, prefs: StationPrefs) {
+        val value = prefs.displayRestoreValue
+        if (value !in 2..5) return
+        if (System.currentTimeMillis() < prefs.displayRestoreAt) return
+        try {
+            client.writeRegister(Ac180p.REG_DISPLAY_TIMEOUT, value)
+            prefs.displayRestoreValue = -1
+            _state.update { it.copy(displayOnUntil = 0) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "restore display timeout failed", e)
         }
     }
 

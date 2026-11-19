@@ -11,6 +11,13 @@ public final class Ac180p {
     public static final int REG_AC_INPUT_POWER = 146;  // Вт (сеть)
     public static final int REG_CTRL_AC = 2011;        // 1 = вкл
     public static final int REG_CTRL_DC = 2012;        // 1 = вкл
+    /**
+     * Тайм-аут экрана: 2 = 30 с, 3 = 1 мин, 4 = 5 мин, 5 = никогда.
+     * Регистр взят у других станций Bluetti V2 (EL100V2, EL10); для AC180P не подтверждён.
+     */
+    public static final int REG_DISPLAY_TIMEOUT = 2067;
+    public static final int DISPLAY_5MIN = 4;
+    public static final int DISPLAY_NEVER = 5;
 
     /** Ёмкость батареи AC180P, Вт·ч. */
     public static final double CAPACITY_WH = 1152.0;
