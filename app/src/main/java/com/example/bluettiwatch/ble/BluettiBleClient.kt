@@ -175,7 +175,7 @@ class BluettiBleClient(private val context: Context, private val address: String
         val c = writeChar ?: throw BleException("Нет характеристики записи")
         val props = c.properties
         val noResponse = (props and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0 &&
-            (props and BluetoothGattCharacteristic.PROPERTY_WRITE_WITHOUT_RESPONSE) != 0
+            (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
         val writeType = if (noResponse) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
 
