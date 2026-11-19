@@ -10,7 +10,6 @@ import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -324,10 +323,11 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
             horizontalAlignment = Alignment.CenterHorizontally,
             autoCentering = AutoCenteringParams(itemIndex = 0),
         ) {
+            item { SocRing(state = state, now = now) }
+            item { PowerRow(state) }
             item {
-                SocRing(
-                    state = state,
-                    now = now,
+                val displayOn = state.displayOnUntil > now
+                Chip(
                     onClick = {
                         if (!connected) {
                             actionMessage = ActionResult(false, "Нет соединения со станцией")
@@ -336,9 +336,23 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
                             scope.launch { actionMessage = StationRepository.wakeDisplay(context) }
                         }
                     },
+                    label = { Text("☀ Экран станции", maxLines = 1) },
+                    secondaryLabel = {
+                        Text(
+                            when {
+                                state.busyDisplay -> "отправляю…"
+                                displayOn -> "включён на 1 мин"
+                                connected -> "включить подсветку"
+                                else -> "нет соединения"
+                            },
+                            maxLines = 1,
+                        )
+                    },
+                    colors = if (displayOn) ChipDefaults.primaryChipColors() else ChipDefaults.secondaryChipColors(),
+                    enabled = connected && !state.busyDisplay,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            item { PowerRow(state) }
             item {
                 Text(
                     statusLine(state, now),
@@ -411,14 +425,13 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
 }
 
 @Composable
-private fun SocRing(state: UiState, now: Long, onClick: () -> Unit) {
+private fun SocRing(state: UiState, now: Long) {
     val r = state.reading
     val soc = r?.soc
     val displayOn = state.displayOnUntil > now
     Box(
         modifier = Modifier
-            .size(150.dp)
-            .clickable(onClickLabel = "Включить экран станции", onClick = onClick),
+            .size(150.dp),
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(
@@ -452,15 +465,9 @@ private fun SocRing(state: UiState, now: Long, onClick: () -> Unit) {
                         color = Grey,
                     )
                 }
-                Text(
-                    when {
-                        state.busyDisplay -> "…"
-                        displayOn -> "☀ экран вкл."
-                        else -> "☀ экран"
-                    },
-                    fontSize = 11.sp,
-                    color = if (displayOn) Color(0xFFFFD54F) else Grey,
-                )
+                if (displayOn) {
+                    Text("☀ экран вкл.", fontSize = 11.sp, color = Color(0xFFFFD54F))
+                }
             }
         }
     }
