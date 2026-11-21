@@ -14,7 +14,12 @@ data class StationReading(
     val acOn: Boolean?,
     val dcOn: Boolean?,
     val timeMillis: Long,
+    /** Напряжение сети на входе, В (null — не удалось прочитать). */
+    val acInVoltage: Double? = null,
 ) {
+    /** Есть ли свет в сети: по напряжению, а если его нет — по мощности с сети. */
+    val gridPresent: Boolean get() = acInVoltage?.let { it > 80.0 } ?: (acInW > 0)
+
     val inputW: Int get() = acInW + dcInW
     val outputW: Int get() = acOutW + dcOutW
     val batteryW: Double get() = Ac180p.batteryPowerW(inputW.toDouble(), outputW.toDouble())
@@ -36,6 +41,11 @@ suspend fun BluettiBleClient.readStation(): StationReading {
     val acOut = readUInt16(Ac180p.REG_AC_OUTPUT_POWER)
     val dcIn = readUInt16(Ac180p.REG_DC_INPUT_POWER)
     val acIn = readUInt16(Ac180p.REG_AC_INPUT_POWER)
+    val acVoltage = try {
+        readUInt16(Ac180p.REG_AC_INPUT_VOLTAGE) / 10.0
+    } catch (e: ModbusException) {
+        null
+    }
     val acOn = readSwitch(Ac180p.REG_CTRL_AC)
     val dcOn = readSwitch(Ac180p.REG_CTRL_DC)
     return StationReading(
@@ -47,6 +57,7 @@ suspend fun BluettiBleClient.readStation(): StationReading {
         acOn = acOn,
         dcOn = dcOn,
         timeMillis = System.currentTimeMillis(),
+        acInVoltage = acVoltage,
     )
 }
 

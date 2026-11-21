@@ -62,6 +62,8 @@ import com.example.bluettiwatch.data.StationPrefs
 import com.example.bluettiwatch.data.StationRepository
 import com.example.bluettiwatch.data.UiState
 import com.example.bluettiwatch.work.RefreshScheduler
+import com.example.bluettiwatch.alerts.AlertMonitor
+import com.example.bluettiwatch.monitor.MonitorService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -102,9 +104,11 @@ fun AppRoot(
                 StatusScreen(
                     state = state,
                     onChangeDevice = { showScan = true },
+                    onMonitorChanged = { activity.monitorEnabled.value = it },
                     onForget = {
                         StationRepository.forgetDevice(context)
                         RefreshScheduler.apply(context)
+                        MonitorService.sync(context)
                         activity.deviceVersion.value += 1
                     },
                 )
@@ -136,7 +140,7 @@ private fun PermissionScreen(onResult: () -> Unit) {
             }
             item {
                 Chip(
-                    onClick = { launcher.launch(Permissions.REQUIRED) },
+                    onClick = { launcher.launch(Permissions.REQUEST) },
                     label = { Text("Разрешить") },
                     colors = ChipDefaults.primaryChipColors(),
                     modifier = Modifier.fillMaxWidth(),
@@ -279,11 +283,27 @@ private fun ScanScreen(canGoBack: Boolean, onBack: () -> Unit, onSelected: (Stri
 // ---------------- Главный экран ----------------
 
 @Composable
-private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: () -> Unit) {
+private fun StatusScreen(
+    state: UiState,
+    onChangeDevice: () -> Unit,
+    onForget: () -> Unit,
+    onMonitorChanged: (Boolean) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { StationPrefs(context) }
     var bgRefresh by remember { mutableStateOf(prefs.backgroundRefresh) }
+    var alertGrid by remember { mutableStateOf(prefs.alertGrid) }
+    var alertLow by remember { mutableStateOf(prefs.alertLow) }
+    var lowThreshold by remember { mutableIntStateOf(prefs.lowThreshold) }
+    var alertFull by remember { mutableStateOf(prefs.alertFull) }
+    var monitor by remember { mutableStateOf(prefs.monitor) }
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    LaunchedEffect(Unit) {
+        if (!AlertMonitor.canNotify(context)) notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
     var actionMessage by remember { mutableStateOf<ActionResult?>(null) }
     val haptic = LocalHapticFeedback.current
     var confirmOff by remember { mutableStateOf<Boolean?>(null) } // true = AC, false = DC
@@ -390,6 +410,81 @@ private fun StatusScreen(state: UiState, onChangeDevice: () -> Unit, onForget: (
                 ) { onOutputTap(false, it) }
             }
             item {
+                Text("Оповещения", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+            }
+            item {
+                ToggleChip(
+                    checked = alertGrid,
+                    onCheckedChange = { alertGrid = it; prefs.alertGrid = it },
+                    label = { Text("Свет пропал / есть", maxLines = 1) },
+                    secondaryLabel = { Text("по напряжению сети", maxLines = 1) },
+                    toggleControl = { Switch(checked = alertGrid) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                ToggleChip(
+                    checked = alertLow,
+                    onCheckedChange = { alertLow = it; prefs.alertLow = it },
+                    label = { Text("Низкий заряд", maxLines = 1) },
+                    secondaryLabel = { Text("ниже $lowThreshold%", maxLines = 1) },
+                    toggleControl = { Switch(checked = alertLow) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                Chip(
+                    onClick = {
+                        val options = listOf(10, 15, 20, 30, 50)
+                        val next = options[(options.indexOf(lowThreshold) + 1) % options.size]
+                        lowThreshold = next
+                        prefs.lowThreshold = next
+                        prefs.lowAlerted = (r?.soc ?: 100) <= next // не сигналить сразу о текущем
+                    },
+                    label = { Text("Порог: $lowThreshold%", maxLines = 1) },
+                    secondaryLabel = { Text("нажмите, чтобы сменить", maxLines = 1) },
+                    colors = ChipDefaults.secondaryChipColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                ToggleChip(
+                    checked = alertFull,
+                    onCheckedChange = { alertFull = it; prefs.alertFull = it },
+                    label = { Text("Заряжена до 100%", maxLines = 1) },
+                    toggleControl = { Switch(checked = alertFull) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                ToggleChip(
+                    checked = monitor,
+                    onCheckedChange = {
+                        monitor = it
+                        prefs.monitor = it
+                        MonitorService.sync(context)
+                        onMonitorChanged(it)
+                    },
+                    label = { Text("Следить постоянно", maxLines = 1) },
+                    secondaryLabel = {
+                        Text(
+                            if (monitor) "сразу, но тратит батарею" else "проверка раз в ~15 мин",
+                            maxLines = 1,
+                        )
+                    },
+                    toggleControl = { Switch(checked = monitor) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                Chip(
+                    onClick = { AlertMonitor.test(context) },
+                    label = { Text("Проверить вибрацию", maxLines = 1) },
+                    colors = ChipDefaults.secondaryChipColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
                 ToggleChip(
                     checked = bgRefresh,
                     onCheckedChange = {
@@ -485,6 +580,12 @@ private fun PowerRow(state: UiState) {
             "AC ${r.acOutW} Вт · DC ${r.dcOutW} Вт",
             fontSize = 11.sp,
             color = Grey,
+        )
+        Text(
+            if (r.gridPresent) "сеть: есть" + (r.acInVoltage?.let { " · ${it.toInt()} В" } ?: "")
+            else "сеть: нет света",
+            fontSize = 11.sp,
+            color = if (r.gridPresent) Color(0xFF81C784) else Color(0xFFFF8A80),
         )
         if (r.inputW > 0) {
             Text(

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.bluettiwatch.alerts.AlertMonitor
 import com.example.bluettiwatch.ble.BluettiBleClient
 import com.example.bluettiwatch.ble.ModbusException
 import com.example.bluettiwatch.protocol.Ac180p
@@ -14,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,6 +41,9 @@ data class ActionResult(val ok: Boolean, val text: String)
 object Permissions {
     val REQUIRED = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
 
+    /** Что запрашиваем: Bluetooth + уведомления (для оповещений). */
+    val REQUEST: Array<String> = REQUIRED + Manifest.permission.POST_NOTIFICATIONS
+
     fun allGranted(context: Context) = REQUIRED.all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
@@ -54,12 +59,17 @@ object StationRepository {
     private const val RETRY_MS = 5_000L
     private const val WIDGET_PUSH_MS = 60_000L
     private const val DISPLAY_ON_MS = 60_000L
+    private const val MONITOR_POLL_MS = 30_000L
+    private const val MONITOR_RETRY_MS = 20_000L
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     /** Только одно BLE-подключение к станции одновременно (станция держит одно соединение). */
     private val connectionMutex = Mutex()
+
+    /** Экран приложения сейчас открыт (в режиме мониторинга — опрашиваем чаще). */
+    val uiVisible = MutableStateFlow(false)
 
     @Volatile private var liveClient: BluettiBleClient? = null
     private var emaBatteryW: Double? = null
@@ -87,8 +97,12 @@ object StationRepository {
         WidgetUpdater.requestUpdate(context.applicationContext)
     }
 
-    /** Живой опрос, пока экран приложения открыт. Отменяется вызывающей стороной. */
-    suspend fun runLive(context: Context) {
+    /**
+     * Живой опрос. Без [monitor] — пока открыт экран приложения (каждые 4 с).
+     * С [monitor] — из службы мониторинга: каждые 30 с, а при открытом экране каждые 4 с.
+     * Отменяется вызывающей стороной.
+     */
+    suspend fun runLive(context: Context, monitor: Boolean = false) {
         val app = context.applicationContext
         val prefs = StationPrefs(app)
         loadCached(app)
@@ -109,7 +123,12 @@ object StationRepository {
                     while (true) {
                         publish(app, client.readStation(), live = true)
                         maybeRestoreDisplay(client, prefs)
-                        delay(POLL_MS)
+                        if (monitor && !uiVisible.value) {
+                            // ждём 30 с, но просыпаемся сразу, если открыли экран
+                            withTimeoutOrNull(MONITOR_POLL_MS) { uiVisible.first { it } }
+                        } else {
+                            delay(POLL_MS)
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -121,7 +140,7 @@ object StationRepository {
                     client.close()
                 }
             }
-            delay(RETRY_MS)
+            delay(if (monitor && !uiVisible.value) MONITOR_RETRY_MS else RETRY_MS)
         }
     }
 
@@ -231,6 +250,11 @@ object StationRepository {
 
     private fun publish(app: Context, r: StationReading, live: Boolean) {
         StationPrefs(app).saveReading(r)
+        try {
+            AlertMonitor.check(app, r)
+        } catch (e: Exception) {
+            Log.w(TAG, "alerts", e)
+        }
 
         val power = if (live) {
             val prev = emaBatteryW

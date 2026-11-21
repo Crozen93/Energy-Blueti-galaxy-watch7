@@ -9,6 +9,7 @@ public final class Ac180p {
     public static final int REG_AC_OUTPUT_POWER = 142; // Вт
     public static final int REG_DC_INPUT_POWER = 144;  // Вт (солнце / авто)
     public static final int REG_AC_INPUT_POWER = 146;  // Вт (сеть)
+    public static final int REG_AC_INPUT_VOLTAGE = 1314; // 0.1 В
     public static final int REG_CTRL_AC = 2011;        // 1 = вкл
     public static final int REG_CTRL_DC = 2012;        // 1 = вкл
     /**

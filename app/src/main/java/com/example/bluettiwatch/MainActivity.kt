@@ -9,8 +9,10 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.bluettiwatch.data.Permissions
 import com.example.bluettiwatch.data.StationPrefs
 import com.example.bluettiwatch.data.StationRepository
+import com.example.bluettiwatch.monitor.MonitorService
 import com.example.bluettiwatch.ui.AppRoot
 import com.example.bluettiwatch.work.RefreshScheduler
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -27,17 +29,31 @@ class MainActivity : ComponentActivity() {
     /** Опрос на паузе (например, во время поиска станций). */
     val livePaused = MutableStateFlow(false)
 
+    /** Включён постоянный мониторинг (опрос ведёт служба, экран только показывает). */
+    val monitorEnabled = MutableStateFlow(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionsGranted.value = Permissions.allGranted(this)
         StationRepository.loadCached(this)
+        monitorEnabled.value = StationPrefs(this).monitor
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(permissionsGranted, deviceVersion, livePaused) { granted, _, paused ->
-                    granted && !paused
-                }.collectLatest { canRun ->
-                    if (canRun && StationPrefs(this@MainActivity).mac != null) {
+                combine(permissionsGranted, deviceVersion, livePaused, monitorEnabled) { granted, _, paused, monitor ->
+                    Pair(granted && !paused, monitor)
+                }.collectLatest { (canRun, monitor) ->
+                    if (!canRun || StationPrefs(this@MainActivity).mac == null) return@collectLatest
+                    if (monitor) {
+                        // Опрос ведёт служба; просим её обновлять чаще, пока экран открыт
+                        MonitorService.sync(applicationContext)
+                        StationRepository.uiVisible.value = true
+                        try {
+                            awaitCancellation()
+                        } finally {
+                            StationRepository.uiVisible.value = false
+                        }
+                    } else {
                         StationRepository.runLive(applicationContext)
                     }
                 }
@@ -55,6 +71,7 @@ class MainActivity : ComponentActivity() {
                     prefs.name = name
                     RefreshScheduler.apply(this)
                     StationRepository.loadCached(this)
+                    MonitorService.sync(this, restart = true)
                     deviceVersion.value += 1
                 },
             )
