@@ -21,7 +21,7 @@ public final class Ac180p {
     public static final int DISPLAY_NEVER = 5;
 
     /** Ёмкость батареи AC180P, Вт·ч. */
-    public static final double CAPACITY_WH = 1152.0;
+    public static final double CAPACITY_WH = 1440.0;
     /** КПД разряда (инвертор/преобразователи) — приблизительно. */
     public static final double DISCHARGE_EFFICIENCY = 0.88;
     /** КПД заряда — приблизительно. */
